@@ -7,3 +7,12 @@ edition = "2021"
 
 [dependencies]
 thiserror = "1.0.58"
+egui = "0.26.2"
+egui-snarl = { git = "https://github.com/zakarumych/egui-snarl", features = ["serde", "egui-probe"] }
+serde = { version = "1.0.197", features = ["derive"] }
+eframe = { version = "0.26", features = ["serde", "persistence"] }
+egui_extras = { version = "0.26", features = ["all_loaders"] }
+syn = { version = "2.0", features = ["extra-traits"] }
+serde_json = { version = "1.0" }
+egui-probe = "0.2.0"
+tiny-fn = { version = "0.1.6" }

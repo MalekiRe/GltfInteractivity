@@ -1,5 +1,7 @@
+use std::cell::OnceCell;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -17,38 +19,133 @@ pub enum ValueType {
 
 pub type NodeId = u32;
 
-#[derive(Debug)]
-pub struct NodeArchetype {
-    node_id: NodeId,
-    input_value_sockets: Vec<InputValueSocket>,
-    input_flow_sockets: Vec<InputFlowSocket>,
-    output_value_sockets: Vec<OutputValueSocket>,
-    output_flow_sockets: Vec<OutputFlowSocket>,
+pub trait NodeArchetypeBuilder: NodeBehavior {
+    fn build(node_id: NodeId) -> NodeArchetypeIncomplete;
+    fn new_node(node_id: NodeId) -> Box<dyn NodeBehavior>;
+    fn name() -> String;
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NodeArchetypeIncomplete {
+    pub node_id: NodeId,
+    pub name: String,
+    pub input_value_sockets: Vec<InputValueSocketIncomplete>,
+    pub input_flow_sockets: Vec<InputFlowSocketIncomplete>,
+    pub output_value_sockets: Vec<OutputValueSocketIncomplete>,
+    pub output_flow_sockets: Vec<OutputFlowSocketIncomplete>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputValueSocketIncomplete {
+    name: String,
+    pub output_value_socket: Option<crate::OutputValueSocketIncomplete>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputValueSocketIncomplete {
+    name: String,
+    node_id: NodeId,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputFlowSocketIncomplete {
+    name: String,
+    node_id: NodeId,
+    pub output_flow_socket: Option<crate::OutputFlowSocketIncomplete>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputFlowSocketIncomplete {
+    name: String,
+    pub input_flow_socket: Option<Box<crate::InputFlowSocketIncomplete>>,
+}
+
+impl From<NodeArchetypeIncomplete> for NodeArchetype {
+    fn from(value: NodeArchetypeIncomplete) -> Self {
+        NodeArchetype {
+            node_id: value.node_id,
+            name: value.name,
+            input_value_sockets: value.input_value_sockets.into_iter().map(|a| a.into()).collect(),
+            input_flow_sockets: value.input_flow_sockets.into_iter().map(|a| a.into()).collect(),
+            output_value_sockets: value.output_value_sockets.into_iter().map(|a| a.into()).collect(),
+            output_flow_sockets: value.output_flow_sockets.into_iter().map(|a| a.into()).collect(),
+        }
+    }
+}
+
+impl From<OutputFlowSocketIncomplete> for OutputFlowSocket {
+    fn from(value: OutputFlowSocketIncomplete) -> OutputFlowSocket {
+        OutputFlowSocket {
+            name: value.name,
+            input_flow_socket: match value.input_flow_socket {
+                None => None,
+                Some(some) => {
+                    Some(Box::new((*some).into()))
+                }
+            },
+        }
+    }
+}
+
+impl From<InputFlowSocketIncomplete> for InputFlowSocket {
+    fn from(value: InputFlowSocketIncomplete) -> Self {
+        InputFlowSocket {
+            name: value.name,
+            node_id: value.node_id,
+            output_flow_socket: value.output_flow_socket.map(|a| a.into()),
+        }
+    }
+}
+
+
+impl From<InputValueSocketIncomplete> for InputValueSocket {
+    fn from(value: InputValueSocketIncomplete) -> InputValueSocket {
+        InputValueSocket {
+            name: value.name,
+            output_value_socket: value.output_value_socket.unwrap().into(),
+        }
+    }
+}
+
+
+impl From<OutputValueSocketIncomplete> for OutputValueSocket {
+    fn from(value: OutputValueSocketIncomplete)-> OutputValueSocket {
+        OutputValueSocket {
+            name: value.name,
+            node_id: value.node_id,
+        }
+    }
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NodeArchetype {
+    pub node_id: NodeId,
+    pub name: String,
+    pub input_value_sockets: Vec<InputValueSocket>,
+    pub input_flow_sockets: Vec<InputFlowSocket>,
+    pub output_value_sockets: Vec<OutputValueSocket>,
+    pub output_flow_sockets: Vec<OutputFlowSocket>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputValueSocket {
     name: String,
     output_value_socket: OutputValueSocket,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputValueSocket {
     name: String,
     node_id: NodeId,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputFlowSocket {
     name: String,
     node_id: NodeId,
     output_flow_socket: Option<OutputFlowSocket>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputFlowSocket {
     name: String,
     input_flow_socket: Option<Box<InputFlowSocket>>,
 }
 
-#[derive(Debug)]
-struct NodeArchetypes(HashMap<NodeId, NodeArchetype>);
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeArchetypes(pub HashMap<NodeId, NodeArchetype>);
 
 impl NodeArchetypes {
     pub fn add_archetype(&mut self, input_value_nodes: &[OutputValueSocket], input_flow_nodes: &[OutputFlowSocket], node: &dyn NodeBehavior) {
@@ -58,7 +155,13 @@ impl NodeArchetypes {
 }
 
 
-struct ExistingValues(HashMap<NodeId, HashMap<String, Value>>);
+pub struct ExistingValues(HashMap<NodeId, HashMap<String, Value>>);
+
+impl Default for ExistingValues {
+    fn default() -> Self {
+        Self(HashMap::default())
+    }
+}
 
 impl ExistingValues {
     pub fn run(&mut self, request: Vec<Request>, node_archetypes: &NodeArchetypes, node_behaviors: &mut NodeBehaviors) {
@@ -90,7 +193,7 @@ impl ExistingValues {
     }
 }
 
-struct NodeBehaviors(HashMap<NodeId, Box<dyn NodeBehavior>>);
+pub struct NodeBehaviors(pub HashMap<NodeId, Box<dyn NodeBehavior>>);
 
 impl NodeBehaviors {
     pub fn add(&mut self, node: Box<dyn NodeBehavior>) {
@@ -120,7 +223,7 @@ pub trait NodeBehavior {
 
     fn activate_input_node(&mut self, node_archetypes: &NodeArchetypes, existing_values: &mut ExistingValues, node_behaviors: &mut NodeBehaviors) -> Option<()>;
 }
-
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MathPi {
     node_id: NodeId
 }
@@ -132,6 +235,32 @@ impl MathPi {
     }
 }
 
+impl NodeArchetypeBuilder for MathPi {
+    fn build(node_id: NodeId) -> NodeArchetypeIncomplete {
+        NodeArchetypeIncomplete {
+            node_id,
+            name: Self::name(),
+            input_value_sockets: vec![],
+            input_flow_sockets: vec![],
+            output_value_sockets: vec![
+                OutputValueSocketIncomplete {
+                    name: "value".to_string(),
+                    node_id,
+                }
+            ],
+            output_flow_sockets: vec![],
+        }
+    }
+
+    fn new_node(node_id: NodeId) -> Box<dyn NodeBehavior> {
+        Box::new(Self::new(node_id))
+    }
+
+    fn name() -> String {
+        "math/pi".to_string()
+    }
+}
+
 impl NodeBehavior for MathPi {
     fn node_id(&self) -> NodeId {
         self.node_id
@@ -140,9 +269,10 @@ impl NodeBehavior for MathPi {
     fn create_node_archetype(&self, _: &[OutputValueSocket], _: &[OutputFlowSocket]) -> NodeArchetype {
         NodeArchetype {
             node_id: self.node_id,
+            name: "math/pi".to_string(),
             input_value_sockets: vec![],
             input_flow_sockets: vec![],
-            output_value_sockets: vec![
+            output_value_sockets: vec![i
                 OutputValueSocket {
                     name: "value".to_string(),
                     node_id: self.node_id,
@@ -162,7 +292,7 @@ impl NodeBehavior for MathPi {
         todo!()
     }
 }
-
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MathAdd {
     node_id: NodeId
 }
@@ -175,6 +305,41 @@ impl MathAdd {
     }
 }
 
+impl NodeArchetypeBuilder for MathAdd {
+    fn build(node_id: NodeId) -> NodeArchetypeIncomplete {
+        NodeArchetypeIncomplete {
+            node_id,
+            name: Self::name(),
+            input_value_sockets: vec![
+                InputValueSocketIncomplete {
+                    name: "a".to_string(),
+                    output_value_socket: None,
+                },
+                InputValueSocketIncomplete {
+                    name: "b".to_string(),
+                    output_value_socket: None,
+                }
+            ],
+            input_flow_sockets: vec![],
+            output_value_sockets: vec![
+                OutputValueSocketIncomplete {
+                    name: "value".to_string(),
+                    node_id,
+                }
+            ],
+            output_flow_sockets: vec![],
+        }
+    }
+
+    fn new_node(node_id: NodeId) -> Box<dyn NodeBehavior> {
+        Box::new(Self::new(node_id))
+    }
+
+    fn name() -> String {
+        "math/add".to_string()
+    }
+}
+
 impl NodeBehavior for MathAdd {
     fn node_id(&self) -> NodeId {
         self.node_id
@@ -183,6 +348,7 @@ impl NodeBehavior for MathAdd {
     fn create_node_archetype(&self, input_value_nodes: &[OutputValueSocket], _: &[OutputFlowSocket]) -> NodeArchetype {
         NodeArchetype {
             node_id: self.node_id,
+            name: "math/add".to_string(),
             input_value_sockets: vec![
                 InputValueSocket {
                     name: "a".to_string(),
@@ -234,7 +400,7 @@ impl NodeBehavior for MathAdd {
     }
 }
 
-
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PrintNode {
     node_id: NodeId,
 }
@@ -247,6 +413,38 @@ impl PrintNode {
     }
 }
 
+impl NodeArchetypeBuilder for PrintNode {
+    fn build(node_id: NodeId) -> NodeArchetypeIncomplete {
+        NodeArchetypeIncomplete {
+            node_id,
+            name: Self::name(),
+            input_value_sockets: vec![
+                InputValueSocketIncomplete {
+                    name: "print_value".to_string(),
+                    output_value_socket: None,
+                }
+            ],
+            input_flow_sockets: vec![
+                InputFlowSocketIncomplete {
+                    name: "print_input".to_string(),
+                    node_id,
+                    output_flow_socket: None,
+                }
+            ],
+            output_value_sockets: vec![],
+            output_flow_sockets: vec![],
+        }
+    }
+
+    fn new_node(node_id: NodeId) -> Box<dyn NodeBehavior> {
+        Box::new(Self::new(node_id))
+    }
+
+    fn name() -> String {
+        "custom/print".to_string()
+    }
+}
+
 impl NodeBehavior for PrintNode {
     fn node_id(&self) -> NodeId {
         self.node_id
@@ -255,6 +453,7 @@ impl NodeBehavior for PrintNode {
     fn create_node_archetype(&self, input_value_nodes: &[OutputValueSocket], input_flow_nodes: &[OutputFlowSocket]) -> NodeArchetype {
         NodeArchetype {
             node_id: self.node_id,
+            name: "custom/print".to_string(),
             input_value_sockets: vec![
                 InputValueSocket {
                     name: "print_value".to_string(),
@@ -288,6 +487,7 @@ impl NodeBehavior for PrintNode {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SequenceNode {
     node_id: NodeId
 }
@@ -300,6 +500,38 @@ impl SequenceNode {
     }
 }
 
+impl NodeArchetypeBuilder for SequenceNode {
+    fn build(node_id: NodeId) -> NodeArchetypeIncomplete {
+        NodeArchetypeIncomplete {
+            node_id,
+            name: Self::name(),
+            input_value_sockets: vec![],
+            input_flow_sockets: vec![
+                InputFlowSocketIncomplete {
+                    name: "in".to_string(),
+                    node_id,
+                    output_flow_socket: None,
+                }
+            ],
+            output_value_sockets: vec![],
+            output_flow_sockets: vec![
+                OutputFlowSocketIncomplete {
+                    name: "out".to_string(),
+                    input_flow_socket: None,
+                }
+            ],
+        }
+    }
+
+    fn new_node(node_id: NodeId) -> Box<dyn NodeBehavior> {
+        Box::new(Self::new(node_id))
+    }
+
+    fn name() -> String {
+        "flow/sequence".to_string()
+    }
+}
+
 impl NodeBehavior for SequenceNode {
     fn node_id(&self) -> NodeId {
         self.node_id
@@ -308,6 +540,7 @@ impl NodeBehavior for SequenceNode {
     fn create_node_archetype(&self, input_value_nodes: &[OutputValueSocket], input_flow_nodes: &[OutputFlowSocket]) -> NodeArchetype {
         NodeArchetype {
             node_id: self.node_id,
+            name: "flow/sequence".to_string(),
             input_value_sockets: vec![],
             input_flow_sockets: vec![
                 InputFlowSocket {
@@ -335,6 +568,31 @@ impl NodeBehavior for SequenceNode {
         Some(())
     }
 }
+
+static REGISTRY: OnceLock<Arc<Mutex<HashMap<String, (Box<fn(NodeId) -> NodeArchetypeIncomplete>, Box<fn(NodeId) -> Box<dyn NodeBehavior>>)>>>> = OnceLock::new();
+
+pub fn get_registry() -> Arc<Mutex<HashMap<String, (Box<fn(NodeId) -> NodeArchetypeIncomplete>, Box<fn(NodeId) -> Box<dyn NodeBehavior>>)>>> {
+    REGISTRY.get_or_init(|| {
+        Arc::new(Mutex::new(HashMap::default()))
+    }).clone()
+}
+
+pub trait RegisterNode {
+    fn register();
+}
+
+impl<T: NodeArchetypeBuilder + NodeBehavior> RegisterNode for T {
+    fn register() {
+        get_registry()
+            .lock().unwrap()
+            .insert(T::name(), (Box::new(|node_id| {
+                T::build(node_id)
+            }), Box::new(|node_id| {
+                T::new_node(node_id)
+            })));
+    }
+}
+
 
 #[test]
 fn test() {
